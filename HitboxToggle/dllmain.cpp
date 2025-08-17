@@ -1,18 +1,22 @@
-#include <Windows.h>
-#include <Psapi.h>
+#include <windows.h>
+#include <psapi.h>
 #include <cstdint>
-#include <cstdio>
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <cstring>
+
+std::atomic<bool> g_Running = true;
 
 const uint8_t damageCtrlPattern[] = {
-    0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00, // mov rax, [rip+????]
-    0x49, 0x8B, 0xD9,                         // mov rbx, r9
-    0x49, 0x8B, 0xF8,                         // mov rdi, r8
-    0x48, 0x8B, 0xF2,                         // mov rsi, rdx
-    0x48, 0x85, 0xC0,                         // test rax, rax
-    0x75, 0x2E                                // jne short
+    0x48, 0x8B, 0x05, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x8B, 0xD9,
+    0x49, 0x8B, 0xF8,
+    0x48, 0x8B, 0xF2,
+    0x48, 0x85, 0xC0,
+    0x75, 0x2E
 };
 const char* damageCtrlMask = "xxx????xxxxxxxxxxxx";
-
 
 uintptr_t AOBScan(const uint8_t* pattern, const char* mask, uintptr_t start, size_t size) {
     for (uintptr_t i = start; i < start + size - strlen(mask); ++i) {
@@ -28,19 +32,17 @@ uintptr_t AOBScan(const uint8_t* pattern, const char* mask, uintptr_t start, siz
     return 0;
 }
 
-DWORD WINAPI MainThread(LPVOID) {
-    
-
-    while (true) {
+void RunHitboxDebug() {
+    while (g_Running) {
         HMODULE hGame = GetModuleHandle(nullptr);
         if (!hGame) {
-            Sleep(5000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
         MODULEINFO modInfo{};
         if (!GetModuleInformation(GetCurrentProcess(), hGame, &modInfo, sizeof(modInfo))) {
-            Sleep(5000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
@@ -49,7 +51,7 @@ DWORD WINAPI MainThread(LPVOID) {
 
         uintptr_t matchAddr = AOBScan(damageCtrlPattern, damageCtrlMask, base, size);
         if (!matchAddr) {
-            Sleep(5000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
@@ -57,25 +59,31 @@ DWORD WINAPI MainThread(LPVOID) {
         uintptr_t damageCtrlPtrAddr = matchAddr + 7 + relOffset;
         uintptr_t damageCtrl = *reinterpret_cast<uintptr_t*>(damageCtrlPtrAddr);
         if (!damageCtrl) {
-            Sleep(5000);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
             continue;
         }
 
         uintptr_t debugFlagAddr = damageCtrl + 0xA0;
         *reinterpret_cast<uint8_t*>(debugFlagAddr) = 1;
 
-        Sleep(5000);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
-
-    return 0;
 }
 
-
-
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
-    if (ul_reason_for_call == DLL_PROCESS_ATTACH) {
+    static std::thread worker;
+
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(hModule);
-        CreateThread(nullptr, 0, MainThread, hModule, 0, nullptr);
+        g_Running = true;
+        worker = std::thread(RunHitboxDebug);
+        worker.detach();
+        break;
+
+    case DLL_PROCESS_DETACH:
+        g_Running = false;
+        break;
     }
     return TRUE;
 }
